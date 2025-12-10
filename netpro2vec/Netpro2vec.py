@@ -429,22 +429,23 @@ class Netpro2vec:
     def __run_d2v(self, dimensions=128, min_count=5, down_sampling=0.0001,
                   workers=4, epochs=10, learning_rate=0.025):
         """
-        Run Doc2Vec to:
-          1) build the vocabulary from graph-documents,
-          2) train the model,
-          3) store the embedding matrix in self.embedding.
-        Compatible with both gensim 3.x and 4.x.
+        Gensim-safe Doc2Vec training:
+          1. Initialize model with NO corpus
+          2. build_vocab(docs)
+          3. train(docs)
+        Works for gensim 3.x and 4.x
         """
-        idx = 0
-        if len(self.prob_type) > 1:
-            idx = len(self.prob_type) - 1
 
+        # If multiple prob types, use last one
+        idx = len(self.prob_type) - 1 if len(self.prob_type) > 1 else 0
         docs = self.document_collections_list[idx]
+
         if not docs:
-            raise Exception("No documents found to train Doc2Vec.")
+            raise Exception("Document list is empty — cannot train Doc2Vec")
 
-        utils.vprint("Doc2Vec embedding in progress...", end='', verbose=self.verbose)
+        utils.vprint("Doc2Vec embedding in progress...", verbose=self.verbose)
 
+        # 1) Create empty model
         model = models.doc2vec.Doc2Vec(
             vector_size=dimensions,
             window=0,
@@ -453,26 +454,27 @@ class Netpro2vec:
             sample=down_sampling,
             workers=workers,
             alpha=learning_rate,
-            seed=self.randomseed,
+            seed=self.randomseed
         )
 
-        # 1) build vocabulary
+        # 2) Build vocabulary
         model.build_vocab(docs)
 
-        # 2) train
+        # 3) Train model
         model.train(
             docs,
             total_examples=len(docs),
-            epochs=epochs,
+            epochs=epochs
         )
 
         self.model = model
-        utils.vprint("Done!", verbose=self.verbose)
 
-        # 3) extract embeddings
+        # 4) Extract embedding matrix
         try:
-            # gensim 4.x
+            # gensim 4
             self.embedding = model.docvecs.vectors
         except AttributeError:
-            # gensim 3.x
+            # gensim 3
             self.embedding = model.docvecs.doctag_syn0
+
+        utils.vprint("Done!", verbose=self.verbose)
