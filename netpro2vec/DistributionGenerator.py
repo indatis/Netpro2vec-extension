@@ -1,5 +1,4 @@
-# @Time    : 13/08/2020 14:16
-# @Email   : ichcha.manipur@gmail.com
+# @Time    : 10/12/2025 13:06
 # @File    : DistributionGenerator.py
 
 import igraph
@@ -18,21 +17,31 @@ This is my comment
 """
 
 class DistributionGenerator:
-	"""
-	Generator class for Node Distance Distribution and Transition probability
-	matrices.
-	"""
-	def __init__(self, distrib_type, graphs: List[ig.Graph],
-				 common_bin_list=True, verbose=False):
-		self.verbose=verbose
-		self.tqdm = tqdm if self.verbose else utils.nop
-		self.distrib_type = distrib_type
-		self.graph_list = graphs
-		self.bin_list = None
-		self.calculate_bin_list = common_bin_list
-		self.distrib_list = []
-		self.matcher = re.compile('^tm[0-9]+')
-		self.__run_distib_comp()
+    """
+    Generator class for Node Distance Distribution and Transition probability
+    matrices.
+    """
+    def __init__(self, distrib_type, graphs: List[ig.Graph],
+                 common_bin_list=True, verbose=False,
+                 vertex_attribute: str = None,
+                 feature_sigma: float = 1.0,
+                 similarity: str = "gaussian"):
+        self.verbose = verbose
+        self.tqdm = tqdm if self.verbose else utils.nop
+        self.distrib_type = distrib_type
+        self.graph_list = graphs
+        self.bin_list = None
+        self.calculate_bin_list = common_bin_list
+        self.distrib_list = []
+        self.matcher = re.compile('^tm[0-9]+')
+
+        # New: options for feature-weighted NDD
+        self.vertex_attribute = vertex_attribute
+        self.feature_sigma = feature_sigma
+        self.similarity = similarity
+
+        self.__run_distib_comp()
+
 
 	def get_distributions(self):
 		return self.distrib_list
@@ -60,6 +69,76 @@ class DistributionGenerator:
 						range(0, num_nodes)])  # s.transpose()
 		distrib_mat = h_g / (num_nodes - 1)
 		self.distrib_list.append(distrib_mat)
+
+	    def __get_feature_ndd(self, g):
+        """
+        Feature-similarity weighted Node Distance Distribution (FS-NDD).
+
+        Requires: self.vertex_attribute is the name of a numeric igraph
+        vertex attribute; each entry is a vector or scalar.
+        """
+        if self.bin_list is None:
+            self.bin_list = np.append(np.arange(0, g.diameter() + 1),
+                                      float('inf'))
+
+        if g.is_directed():
+            mode_g = "OUT"
+        else:
+            mode_g = "ALL"
+
+        num_nodes = g.vcount()
+
+        # 1) structural distances
+        if g.is_weighted():
+            d = np.array(g.shortest_paths_dijkstra(mode=mode_g,
+                                                   weights='weight'))
+        else:
+            d = np.array(g.shortest_paths_dijkstra(mode=mode_g))
+
+        # 2) node features (from igraph vertex attribute)
+        if self.vertex_attribute is None:
+            raise Exception("FS-NDD requires vertex_attribute to be set")
+
+        X = np.array(g.vs[self.vertex_attribute])  # shape (n, p) or (n,)
+        if X.ndim == 1:
+            X = X.reshape(-1, 1)
+
+        # 3) feature similarity matrix S[i,j] = s(x_i, x_j)
+        if self.similarity == "gaussian":
+            diff = X[:, None, :] - X[None, :, :]       # (n, n, p)
+            sqdist = np.sum(diff ** 2, axis=2)         # (n, n)
+            sigma2 = (self.feature_sigma ** 2) if self.feature_sigma > 0 else 1.0
+            S = np.exp(-sqdist / (2.0 * sigma2))
+        elif self.similarity == "cosine":
+            X_norm = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-8)
+            S = X_norm @ X_norm.T
+            S = (S + 1.0) / 2.0
+        else:
+            raise Exception(f"Unknown similarity: {self.similarity}")
+
+        np.fill_diagonal(S, 0.0)  # exclude self
+
+        # 4) histogram over distance bins, weighted by S
+        num_bins = len(self.bin_list) - 1
+        h_g = np.zeros((num_nodes, num_bins), dtype=float)
+
+        bin_idx = np.digitize(d, self.bin_list) - 1   # in {0,...,num_bins-1} or -1
+
+        for i in range(num_nodes):
+            for j in range(num_nodes):
+                if i == j:
+                    continue
+                b = bin_idx[i, j]
+                if 0 <= b < num_bins:
+                    h_g[i, b] += S[i, j]
+
+        # 5) normalize per node
+        row_sums = h_g.sum(axis=1, keepdims=True)
+        row_sums[row_sums == 0] = 1.0
+        distrib_mat = h_g / row_sums
+
+        self.distrib_list.append(distrib_mat)
+
 
 	def __get_transition_matrix(self, g, walk=1):
 
@@ -100,22 +179,32 @@ class DistributionGenerator:
 		distrib_mat = distrib_mat.T
 		self.distrib_list.append(distrib_mat)
 
-	def __run_distib_comp(self):
-		#print(self.distrib_type)
-		if self.distrib_type == "ndd":
-			utils.vprint("Calculating Node Distance Distribution...",
-						 verbose=self.verbose)
-			if self.calculate_bin_list:
-				self.__get_bins()
-			[self.__get_node_distance_distr(g) for g in self.tqdm(self.graph_list)]
-		elif self.matcher.match(self.distrib_type):   # match any 'tm<int>'
-			walk = int(self.distrib_type[2:])
-			utils.vprint("Calculating Transition Matrices %s "
-						 "..."%self.distrib_type, verbose=self.verbose)
-			[self.__get_transition_matrix(g, walk=walk) for g in self.tqdm(
-				self.graph_list)]
-		else:
-			Exception("Wrong distribution selection %r"%self.distrib_type)
+    def __run_distib_comp(self):
+        if self.distrib_type == "ndd":
+            utils.vprint("Calculating Node Distance Distribution...",
+                         verbose=self.verbose)
+            if self.calculate_bin_list:
+                self.__get_bins()
+            [self.__get_node_distance_distr(g)
+             for g in self.tqdm(self.graph_list)]
+
+        elif self.distrib_type == "fndd":
+            utils.vprint("Calculating Feature-weighted NDD (fndd)...",
+                         verbose=self.verbose)
+            if self.calculate_bin_list:
+                self.__get_bins()
+            [self.__get_feature_ndd(g)
+             for g in self.tqdm(self.graph_list)]
+
+        elif self.matcher.match(self.distrib_type):   # match any 'tm<int>'
+            walk = int(self.distrib_type[2:])
+            utils.vprint("Calculating Transition Matrices %s ..."
+                         % self.distrib_type, verbose=self.verbose)
+            [self.__get_transition_matrix(g, walk=walk)
+             for g in self.tqdm(self.graph_list)]
+        else:
+            raise Exception("Wrong distribution selection %r" % self.distrib_type)
+
 
 
 def probability_aggregator_cutoff(probability_distrib_matrix, cut_off=0.01,
@@ -136,3 +225,5 @@ def probability_aggregator_cutoff(probability_distrib_matrix, cut_off=0.01,
 								   cut_off] = 0
 	if return_prob:
 		return probability_distrib_matrix
+
+# Add fndd distribution in DistributionGenerator
