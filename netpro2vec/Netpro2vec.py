@@ -474,27 +474,56 @@ class Netpro2vec:
 
     def __run_d2v(self, dimensions=128, min_count=5, down_sampling=0.0001,
                   workers=4, epochs=10, learning_rate=0.025):
-        """Run Doc2Vec to:
-           1) produce the vocabulary from the list of documents representing the graphs
-           2) train the model on the vocabulary.
-           3) produce the embedding matrix, then store it in the "embedding" attribute.
+        """
+        Run Doc2Vec to:
+          1) build the vocabulary from graph-documents,
+          2) train the model,
+          3) store the embedding matrix in self.embedding.
         """
         idx = 0
         if len(self.prob_type) > 1:
             idx = len(self.prob_type) - 1
+
+        docs = self.document_collections_list[idx]
         utils.vprint("Doc2Vec embedding in progress...", end='', verbose=self.verbose)
-        model = models.doc2vec.Doc2Vec(self.document_collections_list[idx],
-                                       vector_size=dimensions,
-                                       window=0,
-                                       min_count=min_count,
-                                       dm=0,
-                                       sample=down_sampling,
-                                       workers=workers,
-                                       epochs=epochs,
-                                       alpha=learning_rate,
-                                       seed=self.randomseed)
+
+        if gensimversion >= "4":
+            # Gensim 4+ API: create empty model, build_vocab, then train
+            model = models.doc2vec.Doc2Vec(
+                vector_size=dimensions,
+                window=0,
+                min_count=min_count,
+                dm=0,
+                sample=down_sampling,
+                workers=workers,
+                epochs=epochs,
+                alpha=learning_rate,
+                seed=self.randomseed,
+            )
+            model.build_vocab(docs)
+            model.train(
+                docs,
+                total_examples=len(docs),
+                epochs=epochs,
+            )
+        else:
+            # Gensim 3.x API: corpus can be passed directly to the constructor
+            model = models.doc2vec.Doc2Vec(
+                docs,
+                vector_size=dimensions,
+                window=0,
+                min_count=min_count,
+                dm=0,
+                sample=down_sampling,
+                workers=workers,
+                epochs=epochs,
+                alpha=learning_rate,
+                seed=self.randomseed,
+            )
+
         self.model = model
         utils.vprint("Done!", verbose=self.verbose)
+
         if gensimversion >= "4":
             self.embedding = model.docvecs.vectors
         else:
