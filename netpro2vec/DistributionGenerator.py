@@ -1,5 +1,4 @@
-# @Time    : 13/08/2020 14:16
-# @Email   : ichcha.manipur@gmail.com
+# @Time    : 10/12/2025 13:06
 # @File    : DistributionGenerator.py
 
 import igraph
