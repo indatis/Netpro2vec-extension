@@ -231,45 +231,36 @@ class Netpro2vec:
                 utils.vprint("Loading prob mats...", end='\n', verbose=self.verbose)
                 with open(self.probmatfile, 'rb') as infile:
                     self.probmats = pk.load(infile)
+                return
             except Exception as e:
                 utils.vprint("Cannot load saved probs...%s" % e, end='\n', verbose=self.verbose)
                 utils.vprint("...Let's generate them from scratch!", end='\n', verbose=self.verbose)
-                for prob_type in self.prob_type:
-                    if prob_type == "fndd":
-                        self.probmats[prob_type] = DistributionGenerator(
-                            prob_type, graphs,
-                            verbose=self.verbose,
-                            vertex_attribute=self.vertex_attribute,
-                            feature_sigma=self.feature_sigma,
-                            similarity=self.similarity
-                        ).get_distributions()
-                    else:
-                        self.probmats[prob_type] = DistributionGenerator(
-                            prob_type, graphs,
-                            verbose=self.verbose
-                        ).get_distributions()
-        else:
-            for prob_type in self.prob_type:
-                if prob_type == "fndd":
-                    self.probmats[prob_type] = DistributionGenerator(
-                        prob_type, graphs,
-                        verbose=self.verbose,
-                        vertex_attribute=self.vertex_attribute,
-                        feature_sigma=self.feature_sigma,
-                        similarity=self.similarity
-                    ).get_distributions()
-                else:
-                    self.probmats[prob_type] = DistributionGenerator(
-                        prob_type, graphs,
-                        verbose=self.verbose
-                    ).get_distributions()
-            if self.saveprobs:
-                try:
-                    utils.vprint("Saving prob mats...", end='\n', verbose=self.verbose)
-                    with open(self.probmatfile, 'wb') as outfile:
-                        pk.dump(self.probmats, outfile)
-                except Exception as e:
-                    raise Exception("Cannot save probs...", e, e.args)
+
+        # (Loadprobs failed or disabled → generate fresh)
+        self.probmats = {}
+
+        for prob_type in self.prob_type:
+            if prob_type == "fndd":
+                self.probmats[prob_type] = DistributionGenerator(
+                    prob_type, graphs,
+                    verbose=self.verbose,
+                    vertex_attribute=self.vertex_attribute,
+                    feature_sigma=self.feature_sigma,
+                    similarity=self.similarity
+                ).get_distributions()
+            else:
+                self.probmats[prob_type] = DistributionGenerator(
+                    prob_type, graphs,
+                    verbose=self.verbose
+                ).get_distributions()
+
+        if self.saveprobs:
+            try:
+                utils.vprint("Saving prob mats...", end='\n', verbose=self.verbose)
+                with open(self.probmatfile, 'wb') as outfile:
+                    pk.dump(self.probmats, outfile)
+            except Exception as e:
+                raise Exception("Cannot save probs...", e, e.args)
 
     def __generate_probabilities_newsample(self, graphs: List[ig.Graph]):
         probmats = {}
