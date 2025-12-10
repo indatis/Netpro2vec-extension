@@ -1,6 +1,4 @@
-# @Time    : 13/08/2020 19:11
-# @Author  : Ichcha Manipur
-# @Email   : ichcha.manipur@gmail.com
+# @Time    : 10/12/2025 13:19
 # @File    : ProbDocExtractor.py
 
 
@@ -97,7 +95,8 @@ class ProbDocExtractor:
 				[self.features_graph[i].insert(0, self.word_tag + '_' +
 											   str(vertex_labels[i])) for i in
 				 range(0, len(vertex_labels))]
-			elif self.vertex_labels is not None and self.word_tag == 'ndd':
+			#elif self.vertex_labels is not None and self.word_tag == 'ndd':
+			elif self.vertex_labels is not None and self.word_tag in ('ndd', 'fndd'):
 				vertex_labels = self.vertex_labels
 				[self.features_graph[i].insert(0, self.word_tag + '_' + str(
 					vertex_labels[i]))
