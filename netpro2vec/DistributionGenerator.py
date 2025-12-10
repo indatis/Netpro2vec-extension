@@ -13,14 +13,16 @@ import re
 from . import utils
 
 """
-This is my comment
+Cleaned DistributionGenerator with FNDD support
 """
 
 class DistributionGenerator:
     """
-    Generator class for Node Distance Distribution and Transition probability
-    matrices.
+    Generator class for Node Distance Distribution (NDD),
+    Feature-weighted NDD (FNDD),
+    and Transition probability matrices.
     """
+
     def __init__(self, distrib_type, graphs: List[ig.Graph],
                  common_bin_list=True, verbose=False,
                  vertex_attribute: str = None,
@@ -35,94 +37,93 @@ class DistributionGenerator:
         self.distrib_list = []
         self.matcher = re.compile('^tm[0-9]+')
 
-        # New: options for feature-weighted NDD
+        # FNDD options
         self.vertex_attribute = vertex_attribute
         self.feature_sigma = feature_sigma
         self.similarity = similarity
 
         self.__run_distib_comp()
 
+    def get_distributions(self):
+        return self.distrib_list
 
-	def get_distributions(self):
-		return self.distrib_list
+    def __get_bins(self):
+        max_diam = max([g.diameter() for g in self.graph_list])
+        self.bin_list = np.append(np.arange(0, max_diam + 1), float('inf'))
 
-	def __get_bins(self):
-		max_diam = max([g.diameter() for g in self.graph_list])
-		self.bin_list = np.append(np.arange(0, max_diam + 1), float('inf'))
-
-	def __get_node_distance_distr(self, g):
-		if self.bin_list is None:
-			self.bin_list = np.append(np.arange(0, g.diameter() + 1), float(
-				'inf'))
-
-		if g.is_directed():
-			mode_g = "OUT"
-		else:
-			mode_g = "ALL"
-		num_nodes = g.vcount()
-		# Find node-wise distances and their histogram
-		if g.is_weighted():
-			d = g.shortest_paths_dijkstra(mode=mode_g, weights='weight')
-		else:
-			d = g.shortest_paths_dijkstra(mode=mode_g)
-		h_g = np.array([np.histogram(d[x], bins=self.bin_list)[0] for x in
-						range(0, num_nodes)])  # s.transpose()
-		distrib_mat = h_g / (num_nodes - 1)
-		self.distrib_list.append(distrib_mat)
-
-	    def __get_feature_ndd(self, g):
-        """
-        Feature-similarity weighted Node Distance Distribution (FS-NDD).
-
-        Requires: self.vertex_attribute is the name of a numeric igraph
-        vertex attribute; each entry is a vector or scalar.
-        """
+    # ----------------------------------------------------------------------
+    # NDD
+    # ----------------------------------------------------------------------
+    def __get_node_distance_distr(self, g):
         if self.bin_list is None:
-            self.bin_list = np.append(np.arange(0, g.diameter() + 1),
-                                      float('inf'))
+            self.bin_list = np.append(np.arange(0, g.diameter() + 1), float('inf'))
 
-        if g.is_directed():
-            mode_g = "OUT"
+        mode_g = "OUT" if g.is_directed() else "ALL"
+        num_nodes = g.vcount()
+
+        if g.is_weighted():
+            d = g.shortest_paths_dijkstra(mode=mode_g, weights='weight')
         else:
-            mode_g = "ALL"
+            d = g.shortest_paths_dijkstra(mode=mode_g)
 
+        h_g = np.array([
+            np.histogram(d[x], bins=self.bin_list)[0]
+            for x in range(num_nodes)
+        ])
+
+        distrib_mat = h_g / (num_nodes - 1)
+        self.distrib_list.append(distrib_mat)
+
+    # ----------------------------------------------------------------------
+    # FNDD — feature-weighted Node Distance Distribution
+    # ----------------------------------------------------------------------
+    def __get_feature_ndd(self, g):
+        """
+        Feature-similarity weighted Node Distance Distribution (FNDD).
+        """
+
+        if self.bin_list is None:
+            self.bin_list = np.append(np.arange(0, g.diameter() + 1), float('inf'))
+
+        if self.vertex_attribute is None:
+            raise Exception("FNDD requires vertex_attribute to be set")
+
+        mode_g = "OUT" if g.is_directed() else "ALL"
         num_nodes = g.vcount()
 
         # 1) structural distances
         if g.is_weighted():
-            d = np.array(g.shortest_paths_dijkstra(mode=mode_g,
-                                                   weights='weight'))
+            d = np.array(g.shortest_paths_dijkstra(mode=mode_g, weights='weight'))
         else:
             d = np.array(g.shortest_paths_dijkstra(mode=mode_g))
 
-        # 2) node features (from igraph vertex attribute)
-        if self.vertex_attribute is None:
-            raise Exception("FS-NDD requires vertex_attribute to be set")
-
-        X = np.array(g.vs[self.vertex_attribute])  # shape (n, p) or (n,)
+        # 2) node features
+        X = np.array(g.vs[self.vertex_attribute])
         if X.ndim == 1:
             X = X.reshape(-1, 1)
 
-        # 3) feature similarity matrix S[i,j] = s(x_i, x_j)
+        # 3) similarity matrix
         if self.similarity == "gaussian":
-            diff = X[:, None, :] - X[None, :, :]       # (n, n, p)
-            sqdist = np.sum(diff ** 2, axis=2)         # (n, n)
-            sigma2 = (self.feature_sigma ** 2) if self.feature_sigma > 0 else 1.0
-            S = np.exp(-sqdist / (2.0 * sigma2))
+            diff = X[:, None, :] - X[None, :, :]
+            sqdist = np.sum(diff ** 2, axis=2)
+            sigma2 = max(self.feature_sigma, 1e-8) ** 2
+            S = np.exp(-(sqdist) / (2.0 * sigma2))
+
         elif self.similarity == "cosine":
             X_norm = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-8)
             S = X_norm @ X_norm.T
             S = (S + 1.0) / 2.0
+
         else:
-            raise Exception(f"Unknown similarity: {self.similarity}")
+            raise Exception(f"Unknown similarity metric '{self.similarity}'")
 
-        np.fill_diagonal(S, 0.0)  # exclude self
+        np.fill_diagonal(S, 0.0)
 
-        # 4) histogram over distance bins, weighted by S
+        # 4) weighted histogram
         num_bins = len(self.bin_list) - 1
-        h_g = np.zeros((num_nodes, num_bins), dtype=float)
+        h_g = np.zeros((num_nodes, num_bins))
 
-        bin_idx = np.digitize(d, self.bin_list) - 1   # in {0,...,num_bins-1} or -1
+        bin_idx = np.digitize(d, self.bin_list) - 1
 
         for i in range(num_nodes):
             for j in range(num_nodes):
@@ -132,98 +133,103 @@ class DistributionGenerator:
                 if 0 <= b < num_bins:
                     h_g[i, b] += S[i, j]
 
-        # 5) normalize per node
+        # 5) normalize
         row_sums = h_g.sum(axis=1, keepdims=True)
         row_sums[row_sums == 0] = 1.0
         distrib_mat = h_g / row_sums
 
         self.distrib_list.append(distrib_mat)
 
+    # ----------------------------------------------------------------------
+    # TRANSITION MATRICES
+    # ----------------------------------------------------------------------
+    def __get_transition_matrix(self, g, walk=1):
 
-	def __get_transition_matrix(self, g, walk=1):
+        mode_g = "OUT" if g.is_directed() else "ALL"
 
-		if g.is_directed():
-			mode_g = "OUT"
-		else:
-			mode_g = "ALL"
-		if walk == 1:
-			# find 1 walk transition matrix
-			if g.is_weighted():
-				adj_g = g.get_adjacency(attribute='weight')
-			else:
-				adj_g = g.get_adjacency()
-			adj_g = np.array(adj_g.data)
-			dw = adj_g.sum(axis=0)
-			dw[dw == 0] = 1
-			distrib_mat = adj_g / dw
-		else:
-			# find Transition matrices > 1 walk
-			d = g.shortest_paths_dijkstra(mode=mode_g)
-			ego_out = g.neighborhood(vertices=g.vs, order=walk,
-									 mode=mode_g,
-									 mindist=walk)
-			# ego(g, order = walk, nodes = V(g), mindist = walk, mode = mode_g)
-			num_nodes = g.vcount()
-			walk_distances = np.zeros((num_nodes, num_nodes))
+        if walk == 1:
+            if g.is_weighted():
+                adj_g = g.get_adjacency(attribute='weight')
+            else:
+                adj_g = g.get_adjacency()
 
-			# find vertices for the specified walk parameter by indexing the
-			# distances matrix by using the ego indices (ego_out)
-			for i in range(num_nodes):
-				for node in ego_out[i]:
-					walk_distances[i, node] = d[i][node]
-			dw = walk_distances.sum(axis=0)
-			dw[dw == 0] = 1
-			# Normalize adjacency matrix to get the specified walk transition
-			# matrix
-			distrib_mat = walk_distances / dw
-		distrib_mat = distrib_mat.T
-		self.distrib_list.append(distrib_mat)
+            adj_g = np.array(adj_g.data)
+            dw = adj_g.sum(axis=0)
+            dw[dw == 0] = 1
+            distrib_mat = adj_g / dw
 
+        else:
+            d = g.shortest_paths_dijkstra(mode=mode_g)
+            ego_out = g.neighborhood(vertices=g.vs, order=walk,
+                                     mode=mode_g, mindist=walk)
+
+            num_nodes = g.vcount()
+            walk_distances = np.zeros((num_nodes, num_nodes))
+
+            for i in range(num_nodes):
+                for node in ego_out[i]:
+                    walk_distances[i, node] = d[i][node]
+
+            dw = walk_distances.sum(axis=0)
+            dw[dw == 0] = 1
+
+            distrib_mat = walk_distances / dw
+
+        distrib_mat = distrib_mat.T
+        self.distrib_list.append(distrib_mat)
+
+    # ----------------------------------------------------------------------
+    # Main dispatcher
+    # ----------------------------------------------------------------------
     def __run_distib_comp(self):
         if self.distrib_type == "ndd":
             utils.vprint("Calculating Node Distance Distribution...",
                          verbose=self.verbose)
             if self.calculate_bin_list:
                 self.__get_bins()
-            [self.__get_node_distance_distr(g)
-             for g in self.tqdm(self.graph_list)]
+            for g in self.tqdm(self.graph_list):
+                self.__get_node_distance_distr(g)
 
         elif self.distrib_type == "fndd":
             utils.vprint("Calculating Feature-weighted NDD (fndd)...",
                          verbose=self.verbose)
             if self.calculate_bin_list:
                 self.__get_bins()
-            [self.__get_feature_ndd(g)
-             for g in self.tqdm(self.graph_list)]
+            for g in self.tqdm(self.graph_list):
+                self.__get_feature_ndd(g)
 
-        elif self.matcher.match(self.distrib_type):   # match any 'tm<int>'
+        elif self.matcher.match(self.distrib_type):
             walk = int(self.distrib_type[2:])
-            utils.vprint("Calculating Transition Matrices %s ..."
-                         % self.distrib_type, verbose=self.verbose)
-            [self.__get_transition_matrix(g, walk=walk)
-             for g in self.tqdm(self.graph_list)]
+            utils.vprint(f"Calculating Transition Matrices {self.distrib_type}...",
+                         verbose=self.verbose)
+            for g in self.tqdm(self.graph_list):
+                self.__get_transition_matrix(g, walk=walk)
+
         else:
-            raise Exception("Wrong distribution selection %r" % self.distrib_type)
+            raise Exception(f"Wrong distribution selection {self.distrib_type!r}")
 
 
-
+# ----------------------------------------------------------------------
+# Standalone function (not in class)
+# ----------------------------------------------------------------------
 def probability_aggregator_cutoff(probability_distrib_matrix, cut_off=0.01,
-									agg_by=5, return_prob=True,
-									remove_inf=False):
-	if remove_inf:
-		probability_distrib_matrix = np.delete(probability_distrib_matrix,
-											   np.where(
-												   probability_distrib_matrix[:,
-												   -1] >= 1), axis=0)
-	if agg_by > 0:
-		probability_distrib_matrix = pd.DataFrame(np.add.reduceat(
-			probability_distrib_matrix, np.arange(np.shape(
-				probability_distrib_matrix)[1])[::agg_by], axis=1))
-		probability_distrib_matrix = probability_distrib_matrix.to_numpy()
-	if cut_off > 0:
-		probability_distrib_matrix[probability_distrib_matrix <
-								   cut_off] = 0
-	if return_prob:
-		return probability_distrib_matrix
+                                  agg_by=5, return_prob=True,
+                                  remove_inf=False):
+    if remove_inf:
+        probability_distrib_matrix = np.delete(
+            probability_distrib_matrix,
+            np.where(probability_distrib_matrix[:, -1] >= 1), axis=0
+        )
 
-# Add fndd distribution in DistributionGenerator
+    if agg_by > 0:
+        probability_distrib_matrix = pd.DataFrame(
+            np.add.reduceat(probability_distrib_matrix,
+                            np.arange(probability_distrib_matrix.shape[1])[::agg_by],
+                            axis=1)
+        ).to_numpy()
+
+    if cut_off > 0:
+        probability_distrib_matrix[probability_distrib_matrix < cut_off] = 0
+
+    if return_prob:
+        return probability_distrib_matrix
