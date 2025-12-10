@@ -479,52 +479,48 @@ class Netpro2vec:
           1) build the vocabulary from graph-documents,
           2) train the model,
           3) store the embedding matrix in self.embedding.
+        This version is compatible with both gensim 3.x and 4.x.
         """
         idx = 0
         if len(self.prob_type) > 1:
             idx = len(self.prob_type) - 1
 
         docs = self.document_collections_list[idx]
+
+        if not docs:
+            raise Exception("No documents found to train Doc2Vec.")
+
         utils.vprint("Doc2Vec embedding in progress...", end='', verbose=self.verbose)
 
-        if gensimversion >= "4":
-            # Gensim 4+ API: create empty model, build_vocab, then train
-            model = models.doc2vec.Doc2Vec(
-                vector_size=dimensions,
-                window=0,
-                min_count=min_count,
-                dm=0,
-                sample=down_sampling,
-                workers=workers,
-                epochs=epochs,
-                alpha=learning_rate,
-                seed=self.randomseed,
-            )
-            model.build_vocab(docs)
-            model.train(
-                docs,
-                total_examples=len(docs),
-                epochs=epochs,
-            )
-        else:
-            # Gensim 3.x API: corpus can be passed directly to the constructor
-            model = models.doc2vec.Doc2Vec(
-                docs,
-                vector_size=dimensions,
-                window=0,
-                min_count=min_count,
-                dm=0,
-                sample=down_sampling,
-                workers=workers,
-                epochs=epochs,
-                alpha=learning_rate,
-                seed=self.randomseed,
-            )
+        # Create an empty model
+        model = models.doc2vec.Doc2Vec(
+            vector_size=dimensions,
+            window=0,
+            min_count=min_count,
+            dm=0,
+            sample=down_sampling,
+            workers=workers,
+            alpha=learning_rate,
+            seed=self.randomseed,
+        )
+
+        # 1) build vocabulary
+        model.build_vocab(docs)
+
+        # 2) train model on corpus
+        model.train(
+            docs,
+            total_examples=len(docs),
+            epochs=epochs,
+        )
 
         self.model = model
         utils.vprint("Done!", verbose=self.verbose)
 
-        if gensimversion >= "4":
+        # 3) extract embedding matrix (gensim 3 vs 4 compatibility)
+        try:
+            # gensim 4.x
             self.embedding = model.docvecs.vectors
-        else:
+        except AttributeError:
+            # gensim 3.x
             self.embedding = model.docvecs.doctag_syn0
